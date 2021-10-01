@@ -17,9 +17,20 @@ import http.server
 import socketserver
 import threading
 import argparse
+import requests.adapters
 
 SCRIPT_FILE_PATH = os.path.dirname(os.path.abspath(__file__))
 os.chdir(SCRIPT_FILE_PATH)
+
+class timeout(requests.adapters.TimeoutSauce):
+    def __init__(self, *args, **kwargs):
+        if kwargs["connect"] is None:
+            kwargs["connect"] = 30
+        if kwargs["read"] is None:
+            kwargs["read"] = 30
+        super(timeout, self).__init__(*args, **kwargs)
+
+requests.adapters.TimeoutSauce = timeout
 
 class rss_store:
     def __init__(self, args):
@@ -40,32 +51,51 @@ class rss_store:
                                                      title TEXT,
                                                      link TEXT,
                                                      description TEXT,
+                                                     rss_src TEXT,
+                                                     rss_type TEXT,
                                                      size TEXT,
                                                      category TEXT,
                                                      categoryid TEXT,
-                                                     infoHash TEXT PRIMARY KEY,
-                                                     rss_src TEXT)''')
+                                                     infoHash TEXT PRIMARY KEY)''')
         self.conn.commit()
 
-    def regisiter(self, url, saveas, header = {}):
+    def regisiter(self, url, saveas, httpheader, rss_type):
         self.subscribed[url] = {
             "lastupdate": self.max_update_time(url),
             "saveas": saveas,
-            "header": header
+            "httpheader": httpheader,
+            "rss_type": rss_type
         }
 
-    def write_db(self, rss_list, rss_src):
+    def write_db(self, rss_list, rss_src, rss_type):
         c = self.conn.cursor()
-        tuples = [(time.mktime(x["published_parsed"]),
-                   x["title"],
-                   x.get("id", 0),
-                   x.get("summary", x["description"]),
-                   x.get("nyaa_size", 0),
-                   x.get("nyaa_category", "cat"),
-                   x.get("nyaa_categoryid", "cat"),
-                   x.get("nyaa_infohash", hashlib.sha256(x["title"].encode("utf-8")).hexdigest()),
-                   rss_src) for x in rss_list]
-        c.executemany("INSERT INTO rss VALUES (?,?,?,?,?,?,?,?,?)", tuples)
+
+        if rss_type == "nyaa":
+            tuples = [(time.mktime(x["published_parsed"]),
+                       x.get("title"),
+                       x.get("id"),
+                       x.get("summary"),
+                       rss_src,
+                       rss_type,
+                       x.get("nyaa_size"),
+                       x.get("nyaa_category"),
+                       x.get("nyaa_categoryid"),
+                       x.get("nyaa_infohash")) for x in rss_list]
+        else:
+            tuples = [(time.mktime(x["published_parsed"]),
+                       x.get("title"),
+                       x.get("link"),
+                       x.get("description"),
+                       rss_src,
+                       rss_type,
+                       "", "", "",
+                       hashlib.sha256((x["title"] + x["published"]).encode("utf-8")).hexdigest())
+                      for x in rss_list]
+
+        c.executemany('''INSERT OR REPLACE INTO
+                           rss(date, title, link, description, rss_src, rss_type, size, category, categoryid, infoHash)
+                         VALUES (?,?,?,?,?,?,?,?,?,?)
+                      ''', tuples)
         self.conn.commit()
 
     def view(self):
@@ -91,7 +121,7 @@ class rss_store:
         else:
             return 0
 
-    def filter(self, entries):
+    def filter(self, entries, rss_type):
         with open("keyword.txt", "r") as f:
             keywords = f.read().splitlines()
             keywords = [{"category": s.split("%", 1)[0] if "%" in s else ".*",
@@ -109,9 +139,14 @@ class rss_store:
 
             if not skip:
                 for key in keywords:
-                    if re.match(key["category"], entry.get("nyaa_category", key["category"])) and (re.match(key["regex"], entry.title)):
-                        filtered.append(entry)
-                        break
+                    if rss_type == "nyaa":
+                        if re.match(key["category"], entry.get("nyaa_category")) and (re.match(key["regex"], entry.title)):
+                            filtered.append(entry)
+                            break
+                    else:
+                        if key["category"] == ".*" and re.match(key["regex"], entry.title):
+                            filtered.append(entry)
+                            break;
 
         return filtered
 
@@ -120,10 +155,57 @@ class rss_store:
         c.execute("DELETE FROM rss WHERE date<? AND rss_src=?", (limit, rss_src))
         self.conn.commit()
 
+    def gen_torrent_feed(self, url):
+        fg = feedgen.feed.FeedGenerator()
+        fg.load_extension("torrent", atom=True, rss=True)
+
+        fg.id(url)
+        fg.title("Filtered torrent feed of " + url)
+        fg.link(href=url)
+        fg.description("Filtered torrent feed of " + url)
+
+        c = self.conn.cursor()
+        for row in c.execute("SELECT date, title, link, description, size, category, categoryid, infoHash FROM rss WHERE rss_src=?", (url, )):
+            fe = fg.add_entry()
+            fe.torrent.infohash(row[7])
+            fe.torrent.contentlength(row[4])
+            fe.id(row[2])
+            fe.title(row[1])
+            fe.link(href="magnet:?xt=urn:btih:"+row[7])
+            fe.description(row[3] +
+                           '<br/><a href="magnet:?xt=urn:btih:' + row[7] +
+                           '">magnet:?xt=urn:btih:' + row[7] + "</a>")
+            date = pytz.utc.localize(datetime.datetime.utcfromtimestamp(row[0]))
+            fe.pubDate(date)
+
+        fg.rss_str(pretty=True)
+        fg.rss_file(self.subscribed[url]["saveas"])
+
+    def gen_basic_feed(self, url):
+        fg = feedgen.feed.FeedGenerator()
+
+        fg.id(url)
+        fg.title("Filtered torrent feed of " + url)
+        fg.link(href=url)
+        fg.description("Filtered torrent feed of " + url)
+
+        c = self.conn.cursor()
+        for row in c.execute("SELECT date, title, link, description FROM rss WHERE rss_src=?", (url, )):
+            fe = fg.add_entry()
+            fe.id(row[2])
+            fe.title(row[1])
+            fe.link(href=row[2])
+            fe.description(row[3])
+            date = pytz.utc.localize(datetime.datetime.utcfromtimestamp(row[0]))
+            fe.pubDate(date)
+
+        fg.rss_str(pretty=True)
+        fg.rss_file(self.subscribed[url]["saveas"])
+
     def update(self):
         for url in self.subscribed:
             try:
-                resp = requests.get(url, timeout=30.0, headers=self.subscribed[url]["header"])
+                resp = requests.get(url, timeout=30.0, headers=self.subscribed[url]["httpheader"])
             except requests.ReadTimeout:
                 continue
 
@@ -131,35 +213,16 @@ class rss_store:
 
             entries = [x for x in nyaa.entries if time.mktime(x.published_parsed) > self.subscribed[url]["lastupdate"]]
             self.subscribed[url]["lastupdate"] = max([time.mktime(x.published_parsed) for x in nyaa.entries] + [self.subscribed[url]["lastupdate"]])
-            filtered = self.filter(entries)
 
-            self.write_db(filtered, url)
+            filtered = self.filter(entries, self.subscribed[url]["rss_type"])
+
+            self.write_db(filtered, url, self.subscribed[url]["rss_type"])
             self.delete_old_db_entries(self.subscribed[url]["lastupdate"] - self.gc_duration, url)
 
-            fg = feedgen.feed.FeedGenerator()
-            fg.load_extension("torrent", atom=True, rss=True)
-            fg.id(url)
-            fg.title("Filtered torrent feed of " + url)
-            fg.link(href=url)
-            fg.description("Filtered torrent feed of " + url)
-
-            c = self.conn.cursor()
-            for row in c.execute("SELECT * FROM rss WHERE rss_src=?", (url, )):
-                #row = (date, title, link, description, size, category, categoryid, infoHash, rss_src)
-                fe = fg.add_entry()
-                fe.torrent.infohash(row[7])
-                fe.torrent.contentlength(row[4])
-                fe.id(row[2])
-                fe.title(row[1])
-                fe.link(href="magnet:?xt=urn:btih:"+row[7])
-                fe.description(row[3] +
-                               '<br/><a href="magnet:?xt=urn:btih:' + row[7] +
-                               '">magnet:?xt=urn:btih:' + row[7] + "</a>")
-                date = pytz.utc.localize(datetime.datetime.utcfromtimestamp(row[0]))
-                fe.pubDate(date)
-
-            fg.rss_str(pretty=True)
-            fg.rss_file(self.subscribed[url]["saveas"])
+            if self.subscribed[url]["rss_type"] == "nyaa":
+                self.gen_torrent_feed(url)
+            else:
+                self.gen_basic_feed(url)
 
 class Handler(http.server.SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
@@ -172,26 +235,44 @@ def start_http(port):
 
 def main(args):
     rss = rss_store(args)
-    rss.regisiter("https://nyaa.si/?page=rss", "static/nyaa.xml")
-    rss.regisiter("https://sukebei.nyaa.si/?page=rss", "static/sukebei.xml")
-    rss.regisiter("https://manga314.com/feed", "static/manga314.xml")
-    rss.regisiter("https://cmczip.com/feed/", "static/cmczip.xml", {
-        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.12; rv:68.0) Gecko/20100101 Firefox/68.0",
-        "Cookie": "cf_clearance=2a00bc1e9e2353c0cbbdf1022d6f2104026fd219-1612730326-0-150; __cfduid=dee56649dd56d8a1aa7cee406f3ee0ed51612404753"
-    })
+    rss.regisiter(url="https://nyaa.si/?page=rss",
+                  saveas="static/nyaa.xml",
+                  httpheader={},
+                  rss_type="nyaa")
+    rss.regisiter(url="https://sukebei.nyaa.si/?page=rss",
+                  saveas="static/sukebei.xml",
+                  httpheader={},
+                  rss_type="nyaa")
+    rss.regisiter(url="https://manga314.com/feed",
+                  saveas="static/manga314.xml",
+                  httpheader={},
+                  rss_type="basic")
+    rss.regisiter(url="http://dl-zip.com/feed/",
+                  saveas="static/dl-zip.xml",
+                  httpheader={},
+                  rss_type="basic")
+    rss.regisiter(url="https://bszip.com/feed",
+                  saveas="static/bszip.xml",
+                  httpheader={},
+                  rss_type="basic")
 
-
-    thr = threading.Thread(target=start_http, args=(args.port, ))
-    thr.start()
+    if not args.no_server:
+        thr = threading.Thread(target=start_http, args=(args.port, ))
+        thr.start()
 
     while True:
-        rss.update()
+        try:
+            rss.update()
+        except Exception as e:
+            print(e)
+
         print("synced on",
               datetime.datetime.now().strftime("%m/%d/%Y %H:%M:%S"),
               "with", rss.size_db(), "entries")
         time.sleep(rss.loop_duration)
 
-    thr.join()
+    if not args.no_server:
+        thr.join()
 
 def get_parser():
     parser = argparse.ArgumentParser()
@@ -199,6 +280,7 @@ def get_parser():
     parser.add_argument("--gc-duration", type=int, default=4, help="garbage collection on old entries (days)")
     parser.add_argument("--loop-duration", type=int, default=(5 * 60), help="duration of refresh databases (seconds)")
     parser.add_argument("--port", type=int, default=8000, help="listen port")
+    parser.add_argument("--no-server", action="store_true", help="turn off the python http server. Only update rss")
     return parser
 
 if __name__ == "__main__":
