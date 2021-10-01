@@ -51,6 +51,7 @@ class rss_store:
                                                      title TEXT,
                                                      link TEXT,
                                                      description TEXT,
+                                                     author TEXT,
                                                      rss_src TEXT,
                                                      rss_type TEXT,
                                                      size TEXT,
@@ -75,6 +76,7 @@ class rss_store:
                        x.get("title"),
                        x.get("id"),
                        x.get("summary"),
+                       x.get("author"),
                        rss_src,
                        rss_type,
                        x.get("nyaa_size"),
@@ -86,6 +88,7 @@ class rss_store:
                        x.get("title"),
                        x.get("link"),
                        x.get("description"),
+                       x.get("author"),
                        rss_src,
                        rss_type,
                        "", "", "",
@@ -93,15 +96,15 @@ class rss_store:
                       for x in rss_list]
 
         c.executemany('''INSERT OR REPLACE INTO
-                           rss(date, title, link, description, rss_src, rss_type, size, category, categoryid, infoHash)
-                         VALUES (?,?,?,?,?,?,?,?,?,?)
+                           rss(date, title, link, description, author, rss_src, rss_type, size, category, categoryid, infoHash)
+                         VALUES (?,?,?,?,?,?,?,?,?,?,?)
                       ''', tuples)
         self.conn.commit()
 
     def view(self):
         c = self.conn.cursor()
         for row in c.execute("SELECT * FROM rss"):
-            print(row[1], row[7])
+            print(row[1], row[8])
         self.conn.commit()
 
     def size_db(self):
@@ -144,7 +147,8 @@ class rss_store:
                             filtered.append(entry)
                             break
                     else:
-                        if key["category"] == ".*" and re.match(key["regex"], entry.title):
+                        if (key["category"] == ".*" and
+                            (re.match(key["regex"], entry.title) or re.match(key["regex"], entry.author))):
                             filtered.append(entry)
                             break;
 
@@ -165,16 +169,17 @@ class rss_store:
         fg.description("Filtered torrent feed of " + url)
 
         c = self.conn.cursor()
-        for row in c.execute("SELECT date, title, link, description, size, category, categoryid, infoHash FROM rss WHERE rss_src=?", (url, )):
+        for row in c.execute("SELECT date, title, link, description, author, size, category, categoryid, infoHash FROM rss WHERE rss_src=?", (url, )):
             fe = fg.add_entry()
-            fe.torrent.infohash(row[7])
-            fe.torrent.contentlength(row[4])
+            fe.torrent.infohash(row[8])
+            fe.torrent.contentlength(row[5])
             fe.id(row[2])
             fe.title(row[1])
-            fe.link(href="magnet:?xt=urn:btih:"+row[7])
+            fe.author({"name": row[4]})
+            fe.link(href="magnet:?xt=urn:btih:"+row[8])
             fe.description(row[3] +
-                           '<br/><a href="magnet:?xt=urn:btih:' + row[7] +
-                           '">magnet:?xt=urn:btih:' + row[7] + "</a>")
+                           '<br/><a href="magnet:?xt=urn:btih:' + row[8] +
+                           '">magnet:?xt=urn:btih:' + row[8] + "</a>")
             date = pytz.utc.localize(datetime.datetime.utcfromtimestamp(row[0]))
             fe.pubDate(date)
 
@@ -190,12 +195,13 @@ class rss_store:
         fg.description("Filtered torrent feed of " + url)
 
         c = self.conn.cursor()
-        for row in c.execute("SELECT date, title, link, description FROM rss WHERE rss_src=?", (url, )):
+        for row in c.execute("SELECT date, title, link, description, author FROM rss WHERE rss_src=?", (url, )):
             fe = fg.add_entry()
             fe.id(row[2])
             fe.title(row[1])
             fe.link(href=row[2])
             fe.description(row[3])
+            fe.author({"name": row[4]})
             date = pytz.utc.localize(datetime.datetime.utcfromtimestamp(row[0]))
             fe.pubDate(date)
 
@@ -218,6 +224,7 @@ class rss_store:
 
             self.write_db(filtered, url, self.subscribed[url]["rss_type"])
             self.delete_old_db_entries(self.subscribed[url]["lastupdate"] - self.gc_duration, url)
+
 
             if self.subscribed[url]["rss_type"] == "nyaa":
                 self.gen_torrent_feed(url)
