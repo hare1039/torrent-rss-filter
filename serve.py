@@ -243,16 +243,16 @@ def main(args):
                   saveas="static/sukebei.xml",
                   httpheader={},
                   rss_type="nyaa")
-    rss.regisiter(url="https://manga314.com/feed",
-                  saveas="static/manga314.xml",
-                  httpheader={},
-                  rss_type="basic")
     rss.regisiter(url="http://dl-zip.com/feed/",
                   saveas="static/dl-zip.xml",
                   httpheader={},
                   rss_type="basic")
     rss.regisiter(url="https://bszip.com/feed",
                   saveas="static/bszip.xml",
+                  httpheader={},
+                  rss_type="basic")
+    rss.regisiter(url="https://twitter2rss.nomadic.name/imys_staff?",
+                  saveas="static/twitterimys.xml",
                   httpheader={},
                   rss_type="basic")
 
