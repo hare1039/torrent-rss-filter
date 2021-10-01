@@ -3,7 +3,7 @@
 A simple RSS filter: 
 It reads from RSS torrent sources, filter by wanted keyword & remove unwanted keyword, and save as new rss feed.
 
-Currently you need to change the source directly in the code, but its fairly simple.
+Currently you need to change the RSS source directly in the code, but its fairly simple.
 
 # Setup
 To setup, prepare:
@@ -21,11 +21,11 @@ To setup, prepare:
 
 To register feeds sources, edit main() function:
 ```
-rss.regisiter(url="https://nyaa.si/?page=rss",
+    rss.regisiter(url="https://nyaa.si/?page=rss",
                   saveas="static/nyaa.xml",
                   httpheader={},
                   rss_type="nyaa")
-rss.regisiter(url="http://dl-zip.com/feed/",
+    rss.regisiter(url="http://dl-zip.com/feed/",
                   saveas="static/dl-zip.xml",
                   httpheader={},
                   rss_type="basic")
