@@ -17,6 +17,7 @@ import http.server
 import socketserver
 import threading
 import argparse
+import yaml
 import requests.adapters
 
 SCRIPT_FILE_PATH = os.path.dirname(os.path.abspath(__file__))
@@ -37,13 +38,29 @@ class rss_store:
         self.db_name = args.db_name
         self.gc_duration = args.gc_duration * 86400
         self.loop_duration = args.loop_duration
+
         self.conn = sqlite3.connect(self.db_name,
                                     detect_types=sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES)
         self.subscribed = {}
         self.init_db()
 
+        self.filepath = args.config
+        self.update_config()
+
+
     def __del__(self):
         self.conn.close()
+
+    def update_config(self):
+        with open(self.filepath, "r") as stream:
+            self.config = yaml.safe_load(stream)
+        for source in self.config["sources"]:
+            self.regisiter(
+                url = source["url"],
+                saveas = source["saveas"],
+                httpheader = source["httpheader"],
+                rss_type = source["rss_type"]
+            )
 
     def init_db(self):
         c = self.conn.cursor()
@@ -125,13 +142,11 @@ class rss_store:
             return 0
 
     def filter(self, entries, rss_type):
-        with open("keyword.txt", "r") as f:
-            keywords = f.read().splitlines()
-            keywords = [{"category": s.split("%", 1)[0] if "%" in s else ".*",
-                         "regex":    s.split("%", 1)[1] if "%" in s else s} for s in keywords]
+        keywords = self.config["filter"]["keywords"]
+        keywords = [{"category": s.split("%", 1)[0] if "%" in s else ".*",
+                     "regex":    s.split("%", 1)[1] if "%" in s else s} for s in keywords]
 
-        with open("unwanted-keyword.txt", "r") as f:
-            unwanted_keywords = f.read().splitlines()
+        unwanted_keywords = self.config["filter"]["unwantedwords"]
 
         filtered = []
         for entry in entries:
@@ -209,6 +224,7 @@ class rss_store:
         fg.rss_file(self.subscribed[url]["saveas"])
 
     def update(self):
+        self.update_config()
         for url in self.subscribed:
             try:
                 resp = requests.get(url, timeout=30.0, headers=self.subscribed[url]["httpheader"])
@@ -242,26 +258,6 @@ def start_http(port):
 
 def main(args):
     rss = rss_store(args)
-    rss.regisiter(url="https://nyaa.si/?page=rss",
-                  saveas="static/nyaa.xml",
-                  httpheader={},
-                  rss_type="nyaa")
-    rss.regisiter(url="https://sukebei.nyaa.si/?page=rss",
-                  saveas="static/sukebei.xml",
-                  httpheader={},
-                  rss_type="nyaa")
-    rss.regisiter(url="http://dl-zip.com/feed/",
-                  saveas="static/dl-zip.xml",
-                  httpheader={},
-                  rss_type="basic")
-    rss.regisiter(url="https://bszip.com/feed",
-                  saveas="static/bszip.xml",
-                  httpheader={},
-                  rss_type="basic")
-    rss.regisiter(url="https://twitter2rss.nomadic.name/imys_staff?",
-                  saveas="static/twitterimys.xml",
-                  httpheader={},
-                  rss_type="basic")
 
     if not args.no_server:
         thr = threading.Thread(target=start_http, args=(args.port, ))
@@ -287,6 +283,7 @@ def get_parser():
     parser.add_argument("--gc-duration", type=int, default=4, help="garbage collection on old entries (days)")
     parser.add_argument("--loop-duration", type=int, default=(5 * 60), help="duration of refresh databases (seconds)")
     parser.add_argument("--port", type=int, default=8000, help="listen port")
+    parser.add_argument("--config", type=str, default="config.yaml", help="define keywords and sources")
     parser.add_argument("--no-server", action="store_true", help="turn off the python http server. Only update rss")
     return parser
 
