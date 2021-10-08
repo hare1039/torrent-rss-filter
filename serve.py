@@ -6,6 +6,7 @@ import sys
 import time
 import feedparser
 import re
+import copy
 import requests
 import sqlite3
 import pprint
@@ -59,7 +60,9 @@ class rss_store:
                 url = source["url"],
                 saveas = source["saveas"],
                 httpheader = source["httpheader"],
-                rss_type = source["rss_type"]
+                rss_type = source["rss_type"],
+                keywords = source.get("keywords"),
+                unwantedwords = source.get("unwantedwords")
             )
 
     def init_db(self):
@@ -77,12 +80,14 @@ class rss_store:
                                                      infoHash TEXT PRIMARY KEY)''')
         self.conn.commit()
 
-    def regisiter(self, url, saveas, httpheader, rss_type):
+    def regisiter(self, url, saveas, httpheader, rss_type, keywords, unwantedwords):
         self.subscribed[url] = {
             "lastupdate": self.max_update_time(url),
             "saveas": saveas,
             "httpheader": httpheader,
-            "rss_type": rss_type
+            "rss_type": rss_type,
+            "keywords": keywords,
+            "unwantedwords": unwantedwords
         }
 
     def write_db(self, rss_list, rss_src, rss_type):
@@ -141,12 +146,16 @@ class rss_store:
         else:
             return 0
 
-    def filter(self, entries, rss_type):
-        keywords = self.config["filter"]["keywords"]
+    def filter(self, entries, site):
+        keywords = copy.deepcopy(self.config["filter"]["keywords"])
+        if site["keywords"]:
+            keywords.extend(site["keywords"])
         keywords = [{"category": s.split("%", 1)[0] if "%" in s else ".*",
                      "regex":    s.split("%", 1)[1] if "%" in s else s} for s in keywords]
 
-        unwanted_keywords = self.config["filter"]["unwantedwords"]
+        unwanted_keywords = copy.deepcopy(self.config["filter"]["unwantedwords"])
+        if site["unwantedwords"]:
+            unwanted_keywords.extend(site["unwantedwords"])
 
         filtered = []
         for entry in entries:
@@ -157,7 +166,7 @@ class rss_store:
 
             if not skip:
                 for key in keywords:
-                    if rss_type == "nyaa":
+                    if site["rss_type"] == "nyaa":
                         if re.match(key["category"], entry.get("nyaa_category")) and (re.match(key["regex"], entry.title)):
                             filtered.append(entry)
                             break
@@ -236,11 +245,10 @@ class rss_store:
             entries = [x for x in nyaa.entries if time.mktime(x.published_parsed) > self.subscribed[url]["lastupdate"]]
             self.subscribed[url]["lastupdate"] = max([time.mktime(x.published_parsed) for x in nyaa.entries] + [self.subscribed[url]["lastupdate"]])
 
-            filtered = self.filter(entries, self.subscribed[url]["rss_type"])
+            filtered = self.filter(entries, self.subscribed[url])
 
             self.write_db(filtered, url, self.subscribed[url]["rss_type"])
             self.delete_old_db_entries(self.subscribed[url]["lastupdate"] - self.gc_duration, url)
-
 
             if self.subscribed[url]["rss_type"] == "nyaa":
                 self.gen_torrent_feed(url)
