@@ -18,6 +18,7 @@ import http.server
 import socketserver
 import threading
 import argparse
+import json
 import yaml
 import requests.adapters
 
@@ -72,6 +73,7 @@ class rss_store:
                                                      link TEXT,
                                                      description TEXT,
                                                      author TEXT,
+                                                     contents TEXT,
                                                      rss_src TEXT,
                                                      rss_type TEXT,
                                                      size TEXT,
@@ -99,6 +101,7 @@ class rss_store:
                        x.get("id"),
                        x.get("summary"),
                        x.get("author"),
+                       json.dumps(x.get("content") if x.get("content") else []),
                        rss_src,
                        rss_type,
                        x.get("nyaa_size"),
@@ -111,6 +114,7 @@ class rss_store:
                        x.get("link"),
                        x.get("description"),
                        x.get("author"),
+                       json.dumps(x.get("content") if x.get("content") else []),
                        rss_src,
                        rss_type,
                        "", "", "",
@@ -118,15 +122,15 @@ class rss_store:
                       for x in rss_list]
 
         c.executemany('''INSERT OR REPLACE INTO
-                           rss(date, title, link, description, author, rss_src, rss_type, size, category, categoryid, infoHash)
-                         VALUES (?,?,?,?,?,?,?,?,?,?,?)
+                           rss(date, title, link, description, author, contents, rss_src, rss_type, size, category, categoryid, infoHash)
+                         VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
                       ''', tuples)
         self.conn.commit()
 
     def view(self):
         c = self.conn.cursor()
         for row in c.execute("SELECT * FROM rss"):
-            print(row[1], row[8])
+            print(row[1], row[9])
         self.conn.commit()
 
     def size_db(self):
@@ -193,17 +197,20 @@ class rss_store:
         fg.description("Filtered torrent feed of " + url)
 
         c = self.conn.cursor()
-        for row in c.execute("SELECT date, title, link, description, author, size, category, categoryid, infoHash FROM rss WHERE rss_src=?", (url, )):
+        for row in c.execute("SELECT date, title, link, description, author, contents, size, category, categoryid, infoHash FROM rss WHERE rss_src=?", (url, )):
             fe = fg.add_entry()
-            fe.torrent.infohash(row[8])
-            fe.torrent.contentlength(row[5])
+            fe.torrent.infohash(row[9])
+            fe.torrent.contentlength(row[6])
             fe.id(row[2])
             fe.title(row[1])
             fe.author({"name": row[4]})
-            fe.link(href="magnet:?xt=urn:btih:"+row[8])
+            feedcontent = json.loads(row[5])
+            for c in feedcontent:
+                fe.content(content=c["value"])
+            fe.link(href="magnet:?xt=urn:btih:"+row[9])
             fe.description(row[3] +
-                           '<br/><a href="magnet:?xt=urn:btih:' + row[8] +
-                           '">magnet:?xt=urn:btih:' + row[8] + "</a>")
+                           '<br/><a href="magnet:?xt=urn:btih:' + row[9] +
+                           '">magnet:?xt=urn:btih:' + row[9] + "</a>")
             date = pytz.utc.localize(datetime.datetime.utcfromtimestamp(row[0]))
             fe.pubDate(date)
 
@@ -219,13 +226,16 @@ class rss_store:
         fg.description("Filtered torrent feed of " + url)
 
         c = self.conn.cursor()
-        for row in c.execute("SELECT date, title, link, description, author FROM rss WHERE rss_src=?", (url, )):
+        for row in c.execute("SELECT date, title, link, description, author, contents FROM rss WHERE rss_src=?", (url, )):
             fe = fg.add_entry()
             fe.id(row[2])
             fe.title(row[1])
             fe.link(href=row[2])
             fe.description(row[3])
             fe.author({"name": row[4]})
+            feedcontent = json.loads(row[5])
+            for c in feedcontent:
+                fe.content(content=c["value"])
             date = pytz.utc.localize(datetime.datetime.utcfromtimestamp(row[0]))
             fe.pubDate(date)
 
